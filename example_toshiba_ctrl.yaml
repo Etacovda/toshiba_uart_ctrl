@@ -1,11 +1,36 @@
+esphome:
+  name: estia-controller
+  friendly_name: Estia Controller
+
+esp8266:
+  board: d1_mini
+
+logger:
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Estia-Controller"
+    password: "changeme"
+
+captive_portal:
+
 external_components:
   - source:
-      type: local
-      path: components
+      type: git
+      url: https://github.com/Etacovda/toshiba_uart_ctrl
+      ref: main
     components: [ToshibaUART]
+    refresh: 0s
 
 ToshibaUART:
-  update_interval: 20s
+  update_interval: 5s
   id: toshibauart
 
 binary_sensor:
@@ -14,64 +39,72 @@ binary_sensor:
       name: "Toshiba Pump On/Off"
       id: pump_onoff
     heat_pump_heating:
-      id: heat_pump_heating
       name: "Heat Pumping"
     heat_resistor_heating:
-      id: heat_resistor_heating
       name: "Heating with Coil"
     hotwater_pump_heating:
-      id: hotwater_pump_heating
       name: "Hotwater heat pumping"
     hotwater_resistor_heating:
-      id: hotwater_resistor_heating
       name: "Hotwater Coil heating"
 
 sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
   - platform: ToshibaUART
     zone1_water_temp:
-      name: "Zone 1 water temperature"
-      id: zone1_water_temp
+      name: "Zone 1 Water Temperature"
     outside_air_temp:
-      name: "Toshiba - Outdoor ambient temperature"
-      id: outside_air_temp
+      name: "Outdoor Ambient Temperature"
     oudoor_unit_current:
-      name: "Toshiba - Outdoor unit current"
-      id: oudoor_unit_current
+      name: "Outdoor Unit Current"
     heating_compressor_uptime:
-      name: "Toshiba - Heating compressor uptime"
-      id: heating_compressor_uptime
+      name: "Heating Compressor Uptime"
+    inlet_temp:
+      name: "Water Inlet Temperature"
+    outlet_temp:
+      name: "Water Outlet Temperature"
+    low_pressure:
+      name: "Low Pressure"
+    hw_cylinder_temp:
+      name: "Hot Water Cylinder Temperature"
+    discharge_temp:
+      name: "Discharge Temperature"
+    suction_temp:
+      name: "Suction Temperature"
 
 number:
   - platform: ToshibaUART
     zone1_target_temp:
-      name: "Zone 1 target temperature"
-      mode: box
-    hotwater_target_temp:
-      name: "Hotwater target temperature"
+      name: "Zone 1 Target Temperature"
       mode: box
 
+    hotwater_target_temp:
+      name: "Hot Water Target Temperature"
+      mode: box
 
 switch:
   - platform: ToshibaUART
     zone1_switch:
-      name: "Toshiba - Zone 1"
+      name: "Zone 1 Enable"
     hotwater_switch:
-      name: "Toshiba - Hotwater"
+      name: "Hot Water Enable"
     auto_mode_switch:
-      name: "Toshiba - Auto Mode"
+      name: "Auto Mode"
+    cooling_mode_switch:
+      name: "Cooling Mode"
 
 uart:
   id: uart_bus
-  tx_pin: 
+  tx_pin:
     number: D8
-    inverted: False
-  rx_pin: 
+  rx_pin:
     number: D7
-    inverted: False
   baud_rate: 2400
   rx_buffer_size: 2048
   stop_bits: 1
   parity: NONE
-#  debug:
-#    direction: BOTH
-#    dummy_receiver: true
+  debug:
+    direction: BOTH
+    dummy_receiver: true
