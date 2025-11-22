@@ -279,7 +279,19 @@ uint8_t ToshibaUART::return_checksum(uint8_t msg[], int len) {
 }
 
 void ToshibaUART::set_cooling_mode(bool state) {
-  
+  if (pump_state_known && cooling_mode != state){
+    if(state){
+      this->write_array(INST_COOLING_MODE_ON,sizeof(INST_COOLING_MODE_ON));
+    }
+    else{
+      this->write_array(INST_HEATING_MODE_ON,sizeof(INST_HEATING_MODE_ON));
+    }
+    this->flush();
+    pump_state_known = false;
+  }
+  else if ( cooling_mode == state ){
+    this->cooling_mode_switch_switch_->publish_state(cooling_mode);
+  }
 }
 
 void ToshibaUART::set_auto_mode(bool state) {
@@ -344,6 +356,9 @@ void ToshibaUART::publish_states() {
   }
   if (this->auto_mode_switch_switch_) {
     this->auto_mode_switch_switch_->publish_state(auto_mode_active);
+  }
+  if (this->cooling_mode_switch_switch_) {
+    this->cooling_mode_switch_switch_->publish_state(cooling_mode);
   }
 #endif
 
