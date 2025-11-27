@@ -1,54 +1,62 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import number
-from .. import ToshibaUART, CONF_TOSHIBAUART_ID, toshiba_uart_ns
-
 from esphome.const import (
-    CONF_TARGET_TEMPERATURE,
     DEVICE_CLASS_TEMPERATURE,
     UNIT_CELSIUS,
 )
+from .. import ToshibaUART, CONF_TOSHIBAUART_ID
 
-ICON_THERMOMETER_WATER = "mdi:thermometer-water"
-ICON_HOME_THERMOMETER = "mdi:home-thermometer"
+CONF_ZONE1_TARGET_TEMP = "zone1_target_temp"
+CONF_HOTWATER_TARGET_TEMP = "hotwater_target_temp"
 
-Zone1TargetTemp = toshiba_uart_ns.class_("Zone1TargetTemp", number.Number, cg.Component)
-HotwaterTargetTemp = toshiba_uart_ns.class_("HotwaterTargetTemp", number.Number, cg.Component)
+ICON_THERMOMETER = "mdi:thermometer"
 
-CONF_ZONE1_TARGET_TEMP     = "zone1_target_temp"
-CONF_HOTWATER_TARGET_TEMP     = "hotwater_target_temp"
-
-CONFIG_SCHEMA = cv.All(
-    cv.Schema(
-        {
+CONFIG_SCHEMA = cv.Schema(
+    {
         cv.GenerateID(CONF_TOSHIBAUART_ID): cv.use_id(ToshibaUART),
         cv.Optional(CONF_ZONE1_TARGET_TEMP): number.number_schema(
-            Zone1TargetTemp,
             unit_of_measurement=UNIT_CELSIUS,
-            icon=ICON_HOME_THERMOMETER,
+            icon=ICON_THERMOMETER,
             device_class=DEVICE_CLASS_TEMPERATURE,
+            # Zone 1 can do cooling (7-30°C) or heating (22-55°C)
+            # Set range to accommodate both modes
+            min_value=7,
+            max_value=55,
+            step=1,
         ),
         cv.Optional(CONF_HOTWATER_TARGET_TEMP): number.number_schema(
-            HotwaterTargetTemp,
             unit_of_measurement=UNIT_CELSIUS,
-            icon=ICON_THERMOMETER_WATER,
+            icon=ICON_THERMOMETER,
             device_class=DEVICE_CLASS_TEMPERATURE,
+            # Hotwater range
+            min_value=40,
+            max_value=65,
+            step=1,
         ),
-        }
-    ).extend(cv.COMPONENT_SCHEMA)
+    }
 )
 
+
 async def to_code(config):
-    ToshibaUART = await cg.get_variable(config[CONF_TOSHIBAUART_ID])
-    if zone1_target_temp_config := config.get(CONF_ZONE1_TARGET_TEMP):
-        n = await number.new_number(
-            zone1_target_temp_config, min_value=15, max_value=55, step=1
+    hub = await cg.get_variable(config[CONF_TOSHIBAUART_ID])
+
+    if zone1_config := config.get(CONF_ZONE1_TARGET_TEMP):
+        num = await number.new_number(
+            zone1_config,
+            min_value=7,
+            max_value=55,
+            step=1,
         )
-        await cg.register_parented(n, config[CONF_TOSHIBAUART_ID])
-        cg.add(ToshibaUART.set_zone1_target_temp_number(n))
-    if hotwater_target_temp_config := config.get(CONF_HOTWATER_TARGET_TEMP):
-        n = await number.new_number(
-            hotwater_target_temp_config, min_value=40, max_value=75, step=1
+        cg.add(hub.set_zone1_target_temp_number(num))
+        cg.add(num.set_parent(hub))
+
+    if hotwater_config := config.get(CONF_HOTWATER_TARGET_TEMP):
+        num = await number.new_number(
+            hotwater_config,
+            min_value=40,
+            max_value=65,
+            step=1,
         )
-        await cg.register_parented(n, config[CONF_TOSHIBAUART_ID])
-        cg.add(ToshibaUART.set_hotwater_target_temp_number(n))
+        cg.add(hub.set_hotwater_target_temp_number(num))
+        cg.add(num.set_parent(hub))
