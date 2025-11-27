@@ -245,6 +245,8 @@ void ToshibaUART::set_zone1_target_temp(float value) {
     // Temperature encoding works for both heating and cooling: (temp + 16) * 2
     uint8_t temp_target_value = (value + 16) * 2;
     
+    // Set the mode byte: 0x01 for cooling, 0x02 for heating
+    INST_SET_ZONE1_TEMP[8] = cooling_mode ? 0x01 : 0x02;
     INST_SET_ZONE1_TEMP[9] = temp_target_value;
     INST_SET_ZONE1_TEMP[11] = (hotwater_temp + 16) * 2;
     INST_SET_ZONE1_TEMP[12] = temp_target_value;
