@@ -19,20 +19,11 @@ CONFIG_SCHEMA = cv.Schema(
             unit_of_measurement=UNIT_CELSIUS,
             icon=ICON_THERMOMETER,
             device_class=DEVICE_CLASS_TEMPERATURE,
-            # Zone 1 can do cooling (7-30°C) or heating (22-55°C)
-            # Set range to accommodate both modes
-            min_value=7,
-            max_value=55,
-            step=1,
         ),
         cv.Optional(CONF_HOTWATER_TARGET_TEMP): number.number_schema(
             unit_of_measurement=UNIT_CELSIUS,
             icon=ICON_THERMOMETER,
             device_class=DEVICE_CLASS_TEMPERATURE,
-            # Hotwater range
-            min_value=40,
-            max_value=65,
-            step=1,
         ),
     }
 )
