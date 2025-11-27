@@ -16,11 +16,13 @@ CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_TOSHIBAUART_ID): cv.use_id(ToshibaUART),
         cv.Optional(CONF_ZONE1_TARGET_TEMP): number.number_schema(
+            number.Number,
             unit_of_measurement=UNIT_CELSIUS,
             icon=ICON_THERMOMETER,
             device_class=DEVICE_CLASS_TEMPERATURE,
         ),
         cv.Optional(CONF_HOTWATER_TARGET_TEMP): number.number_schema(
+            number.Number,
             unit_of_measurement=UNIT_CELSIUS,
             icon=ICON_THERMOMETER,
             device_class=DEVICE_CLASS_TEMPERATURE,
@@ -32,22 +34,12 @@ CONFIG_SCHEMA = cv.Schema(
 async def to_code(config):
     hub = await cg.get_variable(config[CONF_TOSHIBAUART_ID])
 
-    if zone1_config := config.get(CONF_ZONE1_TARGET_TEMP):
-        num = await number.new_number(
-            zone1_config,
-            min_value=7,
-            max_value=55,
-            step=1,
-        )
+    if CONF_ZONE1_TARGET_TEMP in config:
+        conf = config[CONF_ZONE1_TARGET_TEMP]
+        num = await number.new_number(conf, min_value=7, max_value=55, step=1)
         cg.add(hub.set_zone1_target_temp_number(num))
-        cg.add(num.set_parent(hub))
 
-    if hotwater_config := config.get(CONF_HOTWATER_TARGET_TEMP):
-        num = await number.new_number(
-            hotwater_config,
-            min_value=40,
-            max_value=65,
-            step=1,
-        )
+    if CONF_HOTWATER_TARGET_TEMP in config:
+        conf = config[CONF_HOTWATER_TARGET_TEMP]
+        num = await number.new_number(conf, min_value=40, max_value=65, step=1)
         cg.add(hub.set_hotwater_target_temp_number(num))
-        cg.add(num.set_parent(hub))
