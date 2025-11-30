@@ -1,7 +1,7 @@
 # Toshiba Heat pump control
 
 Thanks to the original creator for the pcb design and board, and thanks to the forked creator for the basis of this new code.
-I have added cooling support with this - Brendon
+I have added cooling support with this, multiple AI iterations of code to fix bugs.
 
 This is a ESPHome External component for controlling Toshiba Air-to-Water heat pumps. 
 The hardware used in this is the @issalig designed control board that will adjust the AB/TC-link physical interface to 3.3V logic level compatible with the ESP boards.
