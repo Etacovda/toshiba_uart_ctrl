@@ -252,8 +252,17 @@ void ToshibaUART::set_zone1_target_temp(float value) {
     INST_SET_ZONE1_TEMP[12] = temp_target_value;
     INST_SET_ZONE1_TEMP[13] = return_checksum(INST_SET_ZONE1_TEMP,sizeof(INST_SET_ZONE1_TEMP)); // second last, checksum
     
+    ESP_LOGD(TAG,"Setting Zone1 temp to %.1f°C (mode byte: 0x%02X, temp byte: 0x%02X)", 
+             value, INST_SET_ZONE1_TEMP[8], temp_target_value);
+    
     this->write_array(INST_SET_ZONE1_TEMP,sizeof(INST_SET_ZONE1_TEMP));
     this->flush();
+    
+    // Store for retry mechanism
+    last_zone1_temp_command_time = millis();
+    last_zone1_temp_command_value = value;
+    zone1_temp_command_pending = true;
+    
     pump_state_known = false;
     wanted_zone1_target_temp = 0;
   }
@@ -473,6 +482,27 @@ void ToshibaUART::loop() {
   if (!hotwater_active_prev && hotwater_active && wanted_hotwater_water_temp){
     hotwater_active_prev = true;
     set_hotwater_target_temp(wanted_hotwater_water_temp);
+  }
+  
+  // Retry temperature command if pump hasn't acknowledged within 3 seconds
+  if (zone1_temp_command_pending && (millis() - last_zone1_temp_command_time > 3000)) {
+    if (zone1_target_temp != last_zone1_temp_command_value) {
+      ESP_LOGW(TAG,"Zone1 temp command not confirmed by pump after 3s, retrying (wanted: %.1f°C, current: %.1f°C)", 
+               last_zone1_temp_command_value, zone1_target_temp);
+      // Resend the command
+      uint8_t temp_target_value = (last_zone1_temp_command_value + 16) * 2;
+      INST_SET_ZONE1_TEMP[8] = cooling_mode ? 0x01 : 0x02;
+      INST_SET_ZONE1_TEMP[9] = temp_target_value;
+      INST_SET_ZONE1_TEMP[11] = (hotwater_temp + 16) * 2;
+      INST_SET_ZONE1_TEMP[12] = temp_target_value;
+      INST_SET_ZONE1_TEMP[13] = return_checksum(INST_SET_ZONE1_TEMP,sizeof(INST_SET_ZONE1_TEMP));
+      this->write_array(INST_SET_ZONE1_TEMP,sizeof(INST_SET_ZONE1_TEMP));
+      this->flush();
+      last_zone1_temp_command_time = millis();
+    } else {
+      // Temperature confirmed, clear pending flag
+      zone1_temp_command_pending = false;
+    }
   }
 
 }

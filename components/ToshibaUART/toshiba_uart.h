@@ -149,6 +149,11 @@ class ToshibaUART : public uart::UARTDevice, public PollingComponent {
     void set_hotwater_state(bool state);
     void request_data(uint8_t request_code);
     void publish_sensor(int sensor_index, int16_t value);
+    
+    // Retry mechanism for temperature commands
+    uint32_t last_zone1_temp_command_time = 0;
+    float last_zone1_temp_command_value = 0;
+    bool zone1_temp_command_pending = false;
 
     uint8_t  INST_SET_ZONE1_TEMP[15]    = {0xF0, 0xF0, 0x0F, 0x60, 0x70, 0xE0, 0x01, 0x23, 0x02, 0x6E, 0x66, 0xA2, 0x6E, 0xC9, 0xA0};
     uint8_t  INST_SET_HOTWATER_TEMP[15] = {0xF0, 0xF0, 0x0F, 0x60, 0x70, 0xE0, 0x01, 0x23, 0x08, 0x00, 0x00, 0xA0, 0x00, 0x8B, 0xA0};
