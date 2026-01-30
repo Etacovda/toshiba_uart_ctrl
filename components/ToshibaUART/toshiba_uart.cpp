@@ -296,23 +296,24 @@ uint8_t ToshibaUART::return_checksum(uint8_t msg[], int len) {
 }
 
 void ToshibaUART::set_cooling_mode(bool state) {
-  ESP_LOGD(TAG,"Cooling mode switch called: state=%d, pump_state_known=%d, cooling_mode=%d", state, pump_state_known, cooling_mode);
+  ESP_LOGI(TAG,"Cooling mode switch called: requested=%d, current cooling_mode=%d, heating_mode=%d, zone1_active=%d, pump_state_known=%d",
+           state, cooling_mode, heating_mode, zone1_active, pump_state_known);
   if (pump_state_known && cooling_mode != state){
     if(state){
       // Switch to cooling mode
-      ESP_LOGD(TAG,"Sending COOLING MODE ON command");
+      ESP_LOGI(TAG,"Sending COOLING MODE ON: F0:F0:0F:60:70:E0:41:0C:81:00:00:48:00:D5:A0");
       this->write_array(INST_COOLING_MODE_ON,sizeof(INST_COOLING_MODE_ON));
     }
     else{
       // Switch to heating mode
-      ESP_LOGD(TAG,"Sending HEATING MODE ON command");
+      ESP_LOGI(TAG,"Sending HEATING MODE ON: F0:F0:0F:60:70:E0:41:0C:01:00:00:48:00:55:A0");
       this->write_array(INST_HEATING_MODE_ON,sizeof(INST_HEATING_MODE_ON));
     }
     this->flush();
     pump_state_known = false;
   }
   else if ( cooling_mode == state ){
-    ESP_LOGD(TAG,"Cooling mode already in requested state, republishing");
+    ESP_LOGI(TAG,"Cooling mode already in requested state (%d), republishing", cooling_mode);
     this->cooling_mode_switch_switch_->publish_state(cooling_mode);
   }
   else {
