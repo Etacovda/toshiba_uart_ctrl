@@ -83,6 +83,14 @@ bool hotwater_active_prev;
 bool cooling_mode;
 bool heating_mode;
 
+// Mode change tracking - prevents UI flicker while waiting for mode to change
+bool mode_change_pending = false;
+bool mode_change_target = false;      // Target mode: true=cooling, false=heating
+uint32_t mode_change_sent_time = 0;
+uint8_t mode_change_retry_count = 0;
+const uint32_t MODE_CHANGE_RETRY_MS = 3000;     // Retry command after 3s if not confirmed
+const uint32_t MODE_CHANGE_MIN_INTERVAL_MS = 5000;  // Minimum 5s between mode changes
+const uint8_t MODE_CHANGE_MAX_RETRIES = 3;
 
 bool query_data = false;
 
@@ -393,28 +401,51 @@ void ToshibaUART::process_command_queue() {
 }
 
 void ToshibaUART::set_cooling_mode(bool state) {
-  ESP_LOGI(TAG,"Cooling mode switch called: requested=%d, current cooling_mode=%d, heating_mode=%d, zone1_active=%d, pump_state_known=%d",
-           state, cooling_mode, heating_mode, zone1_active, pump_state_known);
-  if (pump_state_known && cooling_mode != state){
-    if(state){
-      // Switch to cooling mode - use captured command from wall controller
-      ESP_LOGI(TAG,"Queueing COOLING MODE ON: F0:F0:0C:60:70:E0:01:22:05:05:E9:A0");
-      queue_command(INST_COOLING_MODE_ON, sizeof(INST_COOLING_MODE_ON));
-    }
-    else{
-      // Switch to heating mode - captured from wall controller
-      ESP_LOGI(TAG,"Queueing HEATING MODE ON: F0:F0:0C:60:70:E0:01:22:06:06:EB:A0");
-      queue_command(INST_HEATING_MODE_ON, sizeof(INST_HEATING_MODE_ON));
-    }
-    pump_state_known = false;
+  uint32_t now = millis();
+  ESP_LOGI(TAG,"Cooling mode switch called: requested=%d, current cooling_mode=%d, mode_change_pending=%d",
+           state, cooling_mode, mode_change_pending);
+
+  // If already changing to this mode, ignore duplicate request
+  if (mode_change_pending && mode_change_target == state) {
+    ESP_LOGI(TAG,"Mode change already pending for this state, ignoring");
+    this->cooling_mode_switch_switch_->publish_state(state);  // Keep UI showing target
+    return;
   }
-  else if ( cooling_mode == state ){
-    ESP_LOGI(TAG,"Cooling mode already in requested state (%d), republishing", cooling_mode);
+
+  // Enforce minimum interval between mode changes
+  if (mode_change_sent_time > 0 && (now - mode_change_sent_time < MODE_CHANGE_MIN_INTERVAL_MS)) {
+    ESP_LOGW(TAG,"Mode change too soon (wait %dms), ignoring",
+             MODE_CHANGE_MIN_INTERVAL_MS - (now - mode_change_sent_time));
+    // Republish current target or actual state
+    this->cooling_mode_switch_switch_->publish_state(mode_change_pending ? mode_change_target : cooling_mode);
+    return;
+  }
+
+  // Check if we actually need to change
+  if (cooling_mode == state && !mode_change_pending) {
+    ESP_LOGI(TAG,"Cooling mode already in requested state (%d)", cooling_mode);
     this->cooling_mode_switch_switch_->publish_state(cooling_mode);
+    return;
   }
-  else {
-    ESP_LOGW(TAG,"Cannot change cooling mode - pump_state_known=%d", pump_state_known);
+
+  // Send the mode change command
+  if(state){
+    ESP_LOGI(TAG,"Sending COOLING MODE command");
+    queue_command(INST_COOLING_MODE_ON, sizeof(INST_COOLING_MODE_ON));
   }
+  else{
+    ESP_LOGI(TAG,"Sending HEATING MODE command");
+    queue_command(INST_HEATING_MODE_ON, sizeof(INST_HEATING_MODE_ON));
+  }
+
+  // Track the pending mode change
+  mode_change_pending = true;
+  mode_change_target = state;
+  mode_change_sent_time = now;
+  mode_change_retry_count = 0;
+
+  // Immediately show the target state in UI (don't let status messages override)
+  this->cooling_mode_switch_switch_->publish_state(state);
 }
 
 void ToshibaUART::set_auto_mode(bool state) {
@@ -482,7 +513,12 @@ void ToshibaUART::publish_states() {
     this->auto_mode_switch_switch_->publish_state(auto_mode_active);
   }
   if (this->cooling_mode_switch_switch_) {
-    this->cooling_mode_switch_switch_->publish_state(cooling_mode);
+    // While mode change is pending, show target state not actual state
+    if (mode_change_pending) {
+      this->cooling_mode_switch_switch_->publish_state(mode_change_target);
+    } else {
+      this->cooling_mode_switch_switch_->publish_state(cooling_mode);
+    }
   }
 #endif
 
@@ -568,6 +604,15 @@ void ToshibaUART::loop() {
         }
 
         pump_state_known          = true;
+
+        // Check if pending mode change has been confirmed
+        if (mode_change_pending) {
+          if (cooling_mode == mode_change_target) {
+            ESP_LOGI(TAG, "Mode change confirmed: cooling_mode=%d", cooling_mode);
+            mode_change_pending = false;
+          }
+        }
+
         publish_states();
       } else if ((msg[3] == 0x80) && (msg[4] == 0xA1)) {
         // Command acknowledgment received (80:A1)
@@ -600,7 +645,7 @@ void ToshibaUART::loop() {
   // Retry temperature command if pump hasn't acknowledged within 3 seconds
   if (zone1_temp_command_pending && (millis() - last_zone1_temp_command_time > 3000)) {
     if (zone1_target_temp != last_zone1_temp_command_value) {
-      ESP_LOGW(TAG,"Zone1 temp command not confirmed by pump after 3s, retrying (wanted: %.1f°C, current: %.1f°C)", 
+      ESP_LOGW(TAG,"Zone1 temp command not confirmed by pump after 3s, retrying (wanted: %.1f°C, current: %.1f°C)",
                last_zone1_temp_command_value, zone1_target_temp);
       // Resend the command
       uint8_t temp_target_value = (last_zone1_temp_command_value + 16) * 2;
@@ -615,6 +660,35 @@ void ToshibaUART::loop() {
     } else {
       // Temperature confirmed, clear pending flag
       zone1_temp_command_pending = false;
+    }
+  }
+
+  // Retry mode change if not confirmed after 3 seconds
+  if (mode_change_pending && (millis() - mode_change_sent_time >= MODE_CHANGE_RETRY_MS)) {
+    if (cooling_mode != mode_change_target) {
+      mode_change_retry_count++;
+      if (mode_change_retry_count > MODE_CHANGE_MAX_RETRIES) {
+        ESP_LOGE(TAG, "Mode change failed after %d retries, giving up", MODE_CHANGE_MAX_RETRIES);
+        mode_change_pending = false;
+        // Update switch to show actual state
+        if (this->cooling_mode_switch_switch_) {
+          this->cooling_mode_switch_switch_->publish_state(cooling_mode);
+        }
+      } else {
+        ESP_LOGW(TAG, "Mode change not confirmed after 3s, retry %d/%d (target=%d, actual=%d)",
+                 mode_change_retry_count, MODE_CHANGE_MAX_RETRIES, mode_change_target, cooling_mode);
+        // Resend the mode command
+        if (mode_change_target) {
+          queue_command(INST_COOLING_MODE_ON, sizeof(INST_COOLING_MODE_ON));
+        } else {
+          queue_command(INST_HEATING_MODE_ON, sizeof(INST_HEATING_MODE_ON));
+        }
+        mode_change_sent_time = millis();
+      }
+    } else {
+      // Mode confirmed
+      ESP_LOGI(TAG, "Mode change confirmed on retry check");
+      mode_change_pending = false;
     }
   }
 
