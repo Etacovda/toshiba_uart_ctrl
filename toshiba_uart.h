@@ -3,6 +3,7 @@
 #include "esphome/core/component.h"
 #include "esphome/components/uart/uart.h"
 #include "esphome/core/defines.h"
+#include <deque>
 #ifdef USE_BINARY_SENSOR
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #endif
@@ -34,8 +35,8 @@ const uint8_t  INST_HOTWATER_ON[11]   = {0xF0, 0xF0, 0x0B, 0x60, 0x70, 0xE0, 0x0
 const uint8_t  INST_HOTWATER_OFF[11]  = {0xF0, 0xF0, 0x0B, 0x60, 0x70, 0xE0, 0x01, 0x21, 0x08, 0xE5, 0xA0}; 
 const uint8_t  INST_AUTO_ON[12]       = {0xF0, 0xF0, 0x0C, 0x60, 0x70, 0xE0, 0x01, 0x24, 0x01, 0x01, 0xE3, 0xA0};
 const uint8_t  INST_AUTO_OFF[12]      = {0xF0, 0xF0, 0x0C, 0x60, 0x70, 0xE0, 0x01, 0x24, 0x01, 0x00, 0xE2, 0xA0};
-const uint8_t  INST_COOLING_MODE_ON[12]  = {0xF0, 0xF0, 0x0C, 0x60, 0x70, 0xE0, 0x01, 0x22, 0x05, 0x05, 0xE9, 0xA0};
-const uint8_t  INST_HEATING_MODE_ON[12]  = {0xF0, 0xF0, 0x0C, 0x60, 0x70, 0xE0, 0x01, 0x22, 0x06, 0x06, 0xEB, 0xA0};
+const uint8_t  INST_COOLING_MODE_ON[15]  = {0xF0, 0xF0, 0x0F, 0x60, 0x70, 0xE0, 0x41, 0x0C, 0x81, 0x00, 0x00, 0x48, 0x00, 0xD5, 0xA0};
+const uint8_t  INST_HEATING_MODE_ON[15]  = {0xF0, 0xF0, 0x0F, 0x60, 0x70, 0xE0, 0x41, 0x0C, 0x01, 0x00, 0x00, 0x48, 0x00, 0x55, 0xA0};
 
 
 // const uint8_t CODE_CTRL_TEMP_HW = 0x00;   //Control temperature (Hot water cylinder)  
@@ -74,6 +75,50 @@ const uint8_t CODE_BOOSTER_HEATER_OPERATION_UPTIME = 0xF7;   //Booster heater op
 
 const uint8_t CODE_REQUEST_DATA[26] = {0x03,0x04,0x06,0x07,0x08,0x0A,0x0B,0x0E,0x60,0x61,0x62,0x63,0x65,0x6A,0x6D,0x70,0x72,0x7A,0xF0,0xF1,0xF2,0xF3,0xF4,0xF5,0xF6,0xF7};
 
+// Command Queue Constants
+const uint8_t QUEUE_SIZE = 10;
+const uint32_t CMD_TIMEOUT_MS = 2000;  // 2 seconds
+const uint8_t MAX_RETRIES = 3;
+
+// Command Types
+enum CommandType {
+  CMD_ZONE1_ON,
+  CMD_ZONE1_OFF,
+  CMD_HOTWATER_ON,
+  CMD_HOTWATER_OFF,
+  CMD_AUTO_ON,
+  CMD_AUTO_OFF,
+  CMD_COOLING_MODE_ON,
+  CMD_COOLING_MODE_OFF,
+  CMD_SET_ZONE1_TEMP,
+  CMD_SET_HOTWATER_TEMP
+};
+
+// Command States
+enum CommandState {
+  CMD_STATE_PENDING,
+  CMD_STATE_SENT,
+  CMD_STATE_ACKNOWLEDGED,
+  CMD_STATE_FAILED
+};
+
+// Command Queue Entry
+struct CommandQueueEntry {
+  CommandType type;
+  CommandState state;
+  uint8_t data[15];
+  uint8_t data_length;
+  uint32_t last_send_time;
+  uint8_t retry_count;
+  union {
+    struct {
+      bool expected_state;
+    } switch_cmd;
+    struct {
+      int expected_temp;
+    } temp_cmd;
+  } expected;
+};
 
 #define MSG_ID_ME = MSG_ID_HEADER_REMOTE
 
@@ -149,15 +194,19 @@ class ToshibaUART : public uart::UARTDevice, public PollingComponent {
     void set_hotwater_state(bool state);
     void request_data(uint8_t request_code);
     void publish_sensor(int sensor_index, int16_t value);
-    
-    // Retry mechanism for temperature commands
-    uint32_t last_zone1_temp_command_time = 0;
-    float last_zone1_temp_command_value = 0;
-    bool zone1_temp_command_pending = false;
+
+    // Command Queue functions
+    void process_command_queue();
+    void verify_pending_commands();
+    void send_command(CommandQueueEntry& cmd);
+    void enqueue_command(CommandQueueEntry entry);
 
     uint8_t  INST_SET_ZONE1_TEMP[15]    = {0xF0, 0xF0, 0x0F, 0x60, 0x70, 0xE0, 0x01, 0x23, 0x02, 0x6E, 0x66, 0xA2, 0x6E, 0xC9, 0xA0};
     uint8_t  INST_SET_HOTWATER_TEMP[15] = {0xF0, 0xF0, 0x0F, 0x60, 0x70, 0xE0, 0x01, 0x23, 0x08, 0x00, 0x00, 0xA0, 0x00, 0x8B, 0xA0};
     uint8_t  INST_REQUEST_DATA[12]       = {0xF0, 0xF0, 0x0C, 0x60, 0x70, 0xE0, 0x41, 0x5C, 0x70, 0x00, 0x8B, 0xA0};
+
+    // Command Queue
+    std::deque<CommandQueueEntry> command_queue_;
 };
 
 

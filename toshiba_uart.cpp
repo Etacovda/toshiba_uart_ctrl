@@ -180,54 +180,60 @@ void ToshibaUART::setup() {
 
 
 void ToshibaUART::set_zone1_state(bool state) {
-  if (pump_state_known && zone1_active != state){
-    if(state){
-      this->write_array(INST_ZONE1_ON,sizeof(INST_ZONE1_ON));
-    }
-    else{
-      this->write_array(INST_ZONE1_OFF,sizeof(INST_ZONE1_OFF));
-    }
-    this->flush();
-    pump_state_known = false;
-  }
-  else if ( zone1_active == state ){
+  // Check if state already matches
+  if (pump_state_known && zone1_active == state) {
     this->zone1_switch_switch_->publish_state(zone1_active);
+    return;
   }
+
+  // Create command entry
+  CommandQueueEntry entry;
+  entry.type = state ? CMD_ZONE1_ON : CMD_ZONE1_OFF;
+  entry.state = CMD_STATE_PENDING;
+  entry.retry_count = 0;
+  entry.expected.switch_cmd.expected_state = state;
+
+  // Copy command data
+  const uint8_t* cmd_data = state ? INST_ZONE1_ON : INST_ZONE1_OFF;
+  entry.data_length = sizeof(INST_ZONE1_ON);
+  memcpy(entry.data, cmd_data, entry.data_length);
+
+  // Enqueue command
+  enqueue_command(entry);
 }
 
 void ToshibaUART::set_hotwater_state(bool state) {
-  ESP_LOGD(TAG,"Hotwater switch called: state=%d, pump_state_known=%d, hotwater_active=%d", state, pump_state_known, hotwater_active);
-  if (pump_state_known && hotwater_active != state){
-    if(state){
-      ESP_LOGD(TAG,"Sending HOTWATER ON command");
-      this->write_array(INST_HOTWATER_ON,sizeof(INST_HOTWATER_ON));
-    }
-    else{
-      ESP_LOGD(TAG,"Sending HOTWATER OFF command");
-      this->write_array(INST_HOTWATER_OFF,sizeof(INST_HOTWATER_OFF));
-    }
-    this->flush();
-    pump_state_known = false;
-  }
-  else if ( hotwater_active == state ){
-    ESP_LOGD(TAG,"Hotwater already in requested state, republishing");
+  // Check if state already matches
+  if (pump_state_known && hotwater_active == state) {
     this->hotwater_switch_switch_->publish_state(hotwater_active);
-  }
-  else {
-    ESP_LOGW(TAG,"Cannot change hotwater state - pump_state_known=%d", pump_state_known);
+    return;
   }
 
+  // Create command entry
+  CommandQueueEntry entry;
+  entry.type = state ? CMD_HOTWATER_ON : CMD_HOTWATER_OFF;
+  entry.state = CMD_STATE_PENDING;
+  entry.retry_count = 0;
+  entry.expected.switch_cmd.expected_state = state;
+
+  // Copy command data
+  const uint8_t* cmd_data = state ? INST_HOTWATER_ON : INST_HOTWATER_OFF;
+  entry.data_length = sizeof(INST_HOTWATER_ON);
+  memcpy(entry.data, cmd_data, entry.data_length);
+
+  // Enqueue command
+  enqueue_command(entry);
 }
 
 
 void ToshibaUART::update() {
   current_sensor ++;
-  if ( update_slow_sensors_counter == 10 ){    
+  if ( update_slow_sensors_counter == 10 ){
     if (current_sensor == slow_sensor_count + sensor_count){
       current_sensor = 0;
       update_slow_sensors_counter = 0;
     }
-  } 
+  }
   else {
     update_slow_sensors_counter++;
     if (current_sensor == sensor_count){
@@ -241,50 +247,63 @@ void ToshibaUART::update() {
 }
 
 void ToshibaUART::set_zone1_target_temp(float value) {
-  if (zone1_active) {
-    // Temperature encoding works for both heating and cooling: (temp + 16) * 2
-    uint8_t temp_target_value = (value + 16) * 2;
-    
-    // Set the mode byte: 0x01 for cooling, 0x02 for heating
-    INST_SET_ZONE1_TEMP[8] = cooling_mode ? 0x01 : 0x02;
-    INST_SET_ZONE1_TEMP[9] = temp_target_value;
-    INST_SET_ZONE1_TEMP[11] = (hotwater_temp + 16) * 2;
-    INST_SET_ZONE1_TEMP[12] = temp_target_value;
-    INST_SET_ZONE1_TEMP[13] = return_checksum(INST_SET_ZONE1_TEMP,sizeof(INST_SET_ZONE1_TEMP)); // second last, checksum
-    
-    ESP_LOGD(TAG,"Setting Zone1 temp to %.1f°C (mode byte: 0x%02X, temp byte: 0x%02X)", 
-             value, INST_SET_ZONE1_TEMP[8], temp_target_value);
-    
-    this->write_array(INST_SET_ZONE1_TEMP,sizeof(INST_SET_ZONE1_TEMP));
-    this->flush();
-    
-    // Store for retry mechanism
-    last_zone1_temp_command_time = millis();
-    last_zone1_temp_command_value = value;
-    zone1_temp_command_pending = true;
-    
-    pump_state_known = false;
-    wanted_zone1_target_temp = 0;
-  }
-  else{
+  if (!zone1_active) {
     wanted_zone1_target_temp = value;
+    return;
   }
-  
+
+  // Build temperature command
+  uint8_t temp_target_value = (22 + 16) * 2;
+  if (value >= 22) {
+    temp_target_value = (value + 16) * 2;
+  }
+
+  INST_SET_ZONE1_TEMP[9] = temp_target_value;
+  INST_SET_ZONE1_TEMP[11] = (hotwater_temp + 16) * 2;
+  INST_SET_ZONE1_TEMP[12] = temp_target_value;
+  INST_SET_ZONE1_TEMP[13] = return_checksum(INST_SET_ZONE1_TEMP, sizeof(INST_SET_ZONE1_TEMP));
+
+  // Create command entry
+  CommandQueueEntry entry;
+  entry.type = CMD_SET_ZONE1_TEMP;
+  entry.state = CMD_STATE_PENDING;
+  entry.retry_count = 0;
+  entry.expected.temp_cmd.expected_temp = (int)value;
+
+  // Copy command data
+  entry.data_length = sizeof(INST_SET_ZONE1_TEMP);
+  memcpy(entry.data, INST_SET_ZONE1_TEMP, entry.data_length);
+
+  // Enqueue command
+  enqueue_command(entry);
+  wanted_zone1_target_temp = 0;
 }
 
 void ToshibaUART::set_hotwater_target_temp(float value) {
-  if (hotwater_active) {
-    INST_SET_HOTWATER_TEMP[11] = (value + 16) * 2;
-    INST_SET_HOTWATER_TEMP[13] = return_checksum(INST_SET_HOTWATER_TEMP,sizeof(INST_SET_HOTWATER_TEMP)); // second last, checksum
-    
-    this->write_array(INST_SET_HOTWATER_TEMP,sizeof(INST_SET_HOTWATER_TEMP));
-    this->flush();
-    pump_state_known = false;
-    wanted_hotwater_water_temp = 0;
-  }
-  else{ // Handle if hotwater was not active, the pump would go berserk if values were written without it running
+  if (!hotwater_active) {
+    // Handle if hotwater was not active, the pump would go berserk if values were written without it running
     wanted_hotwater_water_temp = value;
+    return;
   }
+
+  // Build temperature command
+  INST_SET_HOTWATER_TEMP[11] = (value + 16) * 2;
+  INST_SET_HOTWATER_TEMP[13] = return_checksum(INST_SET_HOTWATER_TEMP, sizeof(INST_SET_HOTWATER_TEMP));
+
+  // Create command entry
+  CommandQueueEntry entry;
+  entry.type = CMD_SET_HOTWATER_TEMP;
+  entry.state = CMD_STATE_PENDING;
+  entry.retry_count = 0;
+  entry.expected.temp_cmd.expected_temp = (int)value;
+
+  // Copy command data
+  entry.data_length = sizeof(INST_SET_HOTWATER_TEMP);
+  memcpy(entry.data, INST_SET_HOTWATER_TEMP, entry.data_length);
+
+  // Enqueue command
+  enqueue_command(entry);
+  wanted_hotwater_water_temp = 0;
 }
 
 uint8_t ToshibaUART::return_checksum(uint8_t msg[], int len) {
@@ -296,44 +315,49 @@ uint8_t ToshibaUART::return_checksum(uint8_t msg[], int len) {
 }
 
 void ToshibaUART::set_cooling_mode(bool state) {
-  ESP_LOGD(TAG,"Cooling mode switch called: state=%d, pump_state_known=%d, cooling_mode=%d", state, pump_state_known, cooling_mode);
-  if (pump_state_known && cooling_mode != state){
-    if(state){
-      // Switch to cooling mode
-      ESP_LOGD(TAG,"Sending COOLING MODE ON command");
-      this->write_array(INST_COOLING_MODE_ON,sizeof(INST_COOLING_MODE_ON));
-    }
-    else{
-      // Switch to heating mode
-      ESP_LOGD(TAG,"Sending HEATING MODE ON command");
-      this->write_array(INST_HEATING_MODE_ON,sizeof(INST_HEATING_MODE_ON));
-    }
-    this->flush();
-    pump_state_known = false;
-  }
-  else if ( cooling_mode == state ){
-    ESP_LOGD(TAG,"Cooling mode already in requested state, republishing");
+  // Check if state already matches
+  if (pump_state_known && cooling_mode == state) {
     this->cooling_mode_switch_switch_->publish_state(cooling_mode);
+    return;
   }
-  else {
-    ESP_LOGW(TAG,"Cannot change cooling mode - pump_state_known=%d", pump_state_known);
-  }
+
+  // Create command entry
+  CommandQueueEntry entry;
+  entry.type = state ? CMD_COOLING_MODE_ON : CMD_COOLING_MODE_OFF;
+  entry.state = CMD_STATE_PENDING;
+  entry.retry_count = 0;
+  entry.expected.switch_cmd.expected_state = state;
+
+  // Copy command data
+  const uint8_t* cmd_data = state ? INST_COOLING_MODE_ON : INST_HEATING_MODE_ON;
+  entry.data_length = sizeof(INST_COOLING_MODE_ON);
+  memcpy(entry.data, cmd_data, entry.data_length);
+
+  // Enqueue command
+  enqueue_command(entry);
 }
 
 void ToshibaUART::set_auto_mode(bool state) {
-  if (pump_state_known && auto_mode_active != state){
-    if(state){
-      this->write_array(INST_AUTO_ON,sizeof(INST_AUTO_ON));
-    }
-    else{
-      this->write_array(INST_AUTO_OFF,sizeof(INST_AUTO_OFF));
-    }
-    this->flush();
-    pump_state_known = false;
-  }
-  else if ( auto_mode_active == state ){
+  // Check if state already matches
+  if (pump_state_known && auto_mode_active == state) {
     this->auto_mode_switch_switch_->publish_state(auto_mode_active);
+    return;
   }
+
+  // Create command entry
+  CommandQueueEntry entry;
+  entry.type = state ? CMD_AUTO_ON : CMD_AUTO_OFF;
+  entry.state = CMD_STATE_PENDING;
+  entry.retry_count = 0;
+  entry.expected.switch_cmd.expected_state = state;
+
+  // Copy command data
+  const uint8_t* cmd_data = state ? INST_AUTO_ON : INST_AUTO_OFF;
+  entry.data_length = sizeof(INST_AUTO_ON);
+  memcpy(entry.data, cmd_data, entry.data_length);
+
+  // Enqueue command
+  enqueue_command(entry);
 }
 
 
@@ -345,6 +369,157 @@ void ToshibaUART::request_data(uint8_t request_code) {
   //ESP_LOGD(TAG,"Request = 0x%02x, current sensor = %d, chcksum = 0x%02x", INST_REQUEST_DATA[7],sensor_arr[current_sensor],temp);
 }
 
+void ToshibaUART::send_command(CommandQueueEntry& cmd) {
+  this->write_array(cmd.data, cmd.data_length);
+  this->flush();
+  pump_state_known = false;
+  ESP_LOGI(TAG, "→ Sent command type %d, retry %d/%d", cmd.type, cmd.retry_count, MAX_RETRIES);
+}
+
+void ToshibaUART::enqueue_command(CommandQueueEntry entry) {
+  if (command_queue_.size() >= QUEUE_SIZE) {
+    ESP_LOGW(TAG, "⚠ Command queue full (%d entries), dropping oldest pending command", QUEUE_SIZE);
+    // Find and remove oldest PENDING or FAILED command
+    for (auto it = command_queue_.begin(); it != command_queue_.end(); ++it) {
+      if (it->state == CMD_STATE_PENDING || it->state == CMD_STATE_FAILED) {
+        command_queue_.erase(it);
+        break;
+      }
+    }
+  }
+  command_queue_.push_back(entry);
+  ESP_LOGI(TAG, "+ Enqueued command type %d, queue size: %d", entry.type, command_queue_.size());
+}
+
+void ToshibaUART::process_command_queue() {
+  if (command_queue_.empty()) {
+    return;
+  }
+
+  CommandQueueEntry& cmd = command_queue_.front();
+  uint32_t now = millis();
+
+  switch (cmd.state) {
+    case CMD_STATE_PENDING:
+      // Only send if we have recent pump state knowledge
+      if (!pump_state_known) {
+        ESP_LOGD(TAG, "Waiting for pump state before sending command type %d", cmd.type);
+        return;
+      }
+      // Send immediately
+      send_command(cmd);
+      cmd.state = CMD_STATE_SENT;
+      cmd.last_send_time = now;
+      break;
+
+    case CMD_STATE_SENT:
+      // Check for timeout
+      if (now - cmd.last_send_time > CMD_TIMEOUT_MS) {
+        if (cmd.retry_count < MAX_RETRIES) {
+          // Retry
+          ESP_LOGW(TAG, "Command type %d timeout, retry %d/%d",
+                   cmd.type, cmd.retry_count + 1, MAX_RETRIES);
+          cmd.retry_count++;
+          send_command(cmd);
+          cmd.last_send_time = now;
+        } else {
+          // Max retries exceeded
+          ESP_LOGE(TAG, "Command type %d FAILED after %d retries", cmd.type, MAX_RETRIES);
+          cmd.state = CMD_STATE_FAILED;
+          command_queue_.pop_front();
+        }
+      }
+      // Otherwise, wait for acknowledgment (verified elsewhere)
+      break;
+
+    case CMD_STATE_ACKNOWLEDGED:
+      // Success, remove from queue
+      ESP_LOGD(TAG, "Command type %d acknowledged successfully", cmd.type);
+      command_queue_.pop_front();
+      break;
+
+    case CMD_STATE_FAILED:
+      // Already logged, just remove
+      command_queue_.pop_front();
+      break;
+  }
+}
+
+void ToshibaUART::verify_pending_commands() {
+  if (command_queue_.empty()) {
+    return;
+  }
+
+  CommandQueueEntry& cmd = command_queue_.front();
+
+  // Only verify if command is in SENT state
+  if (cmd.state != CMD_STATE_SENT) {
+    return;
+  }
+
+  bool acknowledged = false;
+
+  switch (cmd.type) {
+    case CMD_ZONE1_ON:
+    case CMD_ZONE1_OFF:
+      acknowledged = (zone1_active == cmd.expected.switch_cmd.expected_state);
+      if (!acknowledged) {
+        ESP_LOGV(TAG, "Waiting for zone1 state: expected=%d, actual=%d",
+                 cmd.expected.switch_cmd.expected_state, zone1_active);
+      }
+      break;
+
+    case CMD_HOTWATER_ON:
+    case CMD_HOTWATER_OFF:
+      acknowledged = (hotwater_active == cmd.expected.switch_cmd.expected_state);
+      if (!acknowledged) {
+        ESP_LOGV(TAG, "Waiting for hotwater state: expected=%d, actual=%d",
+                 cmd.expected.switch_cmd.expected_state, hotwater_active);
+      }
+      break;
+
+    case CMD_AUTO_ON:
+    case CMD_AUTO_OFF:
+      acknowledged = (auto_mode_active == cmd.expected.switch_cmd.expected_state);
+      if (!acknowledged) {
+        ESP_LOGV(TAG, "Waiting for auto mode state: expected=%d, actual=%d",
+                 cmd.expected.switch_cmd.expected_state, auto_mode_active);
+      }
+      break;
+
+    case CMD_COOLING_MODE_ON:
+    case CMD_COOLING_MODE_OFF:
+      acknowledged = (cooling_mode == cmd.expected.switch_cmd.expected_state);
+      if (!acknowledged) {
+        ESP_LOGV(TAG, "Waiting for cooling mode state: expected=%d, actual=%d",
+                 cmd.expected.switch_cmd.expected_state, cooling_mode);
+      }
+      break;
+
+    case CMD_SET_ZONE1_TEMP:
+      // Temperature might take a moment to match exactly
+      // Allow small tolerance (within 1 degree)
+      acknowledged = (abs(zone1_target_temp - cmd.expected.temp_cmd.expected_temp) <= 1);
+      if (!acknowledged) {
+        ESP_LOGV(TAG, "Waiting for zone1 temp: expected=%d, actual=%d",
+                 cmd.expected.temp_cmd.expected_temp, zone1_target_temp);
+      }
+      break;
+
+    case CMD_SET_HOTWATER_TEMP:
+      acknowledged = (abs(hotwater_temp - cmd.expected.temp_cmd.expected_temp) <= 1);
+      if (!acknowledged) {
+        ESP_LOGV(TAG, "Waiting for hotwater temp: expected=%d, actual=%d",
+                 cmd.expected.temp_cmd.expected_temp, hotwater_temp);
+      }
+      break;
+  }
+
+  if (acknowledged) {
+    cmd.state = CMD_STATE_ACKNOWLEDGED;
+    ESP_LOGI(TAG, "✓ Command type %d acknowledged successfully", cmd.type);
+  }
+}
 
 void ToshibaUART::publish_sensor(int sensor_index, int16_t value) {
   float temp;
@@ -432,6 +607,9 @@ void ToshibaUART::publish_states() {
 }
 
 void ToshibaUART::loop() {
+  // Process command queue
+  process_command_queue();
+
   status_msg = false;
   while (available()) {
     read_array(msg_start,3);
@@ -467,6 +645,10 @@ void ToshibaUART::loop() {
         }
 
         pump_state_known          = true;
+
+        // Verify command acknowledgments
+        verify_pending_commands();
+
         publish_states();
       } else if ((msg[3] == 0x80) && (msg[4] == 0x5C)) {
         publish_sensor(sensor_arr[current_sensor],encode_uint16(msg[5],msg[6]));
@@ -482,27 +664,6 @@ void ToshibaUART::loop() {
   if (!hotwater_active_prev && hotwater_active && wanted_hotwater_water_temp){
     hotwater_active_prev = true;
     set_hotwater_target_temp(wanted_hotwater_water_temp);
-  }
-  
-  // Retry temperature command if pump hasn't acknowledged within 3 seconds
-  if (zone1_temp_command_pending && (millis() - last_zone1_temp_command_time > 3000)) {
-    if (zone1_target_temp != last_zone1_temp_command_value) {
-      ESP_LOGW(TAG,"Zone1 temp command not confirmed by pump after 3s, retrying (wanted: %.1f°C, current: %.1f°C)", 
-               last_zone1_temp_command_value, zone1_target_temp);
-      // Resend the command
-      uint8_t temp_target_value = (last_zone1_temp_command_value + 16) * 2;
-      INST_SET_ZONE1_TEMP[8] = cooling_mode ? 0x01 : 0x02;
-      INST_SET_ZONE1_TEMP[9] = temp_target_value;
-      INST_SET_ZONE1_TEMP[11] = (hotwater_temp + 16) * 2;
-      INST_SET_ZONE1_TEMP[12] = temp_target_value;
-      INST_SET_ZONE1_TEMP[13] = return_checksum(INST_SET_ZONE1_TEMP,sizeof(INST_SET_ZONE1_TEMP));
-      this->write_array(INST_SET_ZONE1_TEMP,sizeof(INST_SET_ZONE1_TEMP));
-      this->flush();
-      last_zone1_temp_command_time = millis();
-    } else {
-      // Temperature confirmed, clear pending flag
-      zone1_temp_command_pending = false;
-    }
   }
 
 }
