@@ -306,12 +306,9 @@ void ToshibaUART::set_cooling_mode(bool state) {
       this->flush();
     }
     else{
-      // Switch to heating mode - need to toggle zone OFF then ON to reset mode
-      ESP_LOGI(TAG,"Switching to heating mode via zone toggle (OFF then ON)");
-      this->write_array(INST_ZONE1_OFF,sizeof(INST_ZONE1_OFF));
-      this->flush();
-      delay(300);
-      this->write_array(INST_ZONE1_ON,sizeof(INST_ZONE1_ON));
+      // Switch to heating mode - send cooling OFF command (00:00 to disable cooling)
+      ESP_LOGI(TAG,"Sending COOLING MODE OFF: F0:F0:0C:60:70:E0:01:22:00:00:DF:A0");
+      this->write_array(INST_COOLING_MODE_OFF,sizeof(INST_COOLING_MODE_OFF));
       this->flush();
     }
     pump_state_known = false;
