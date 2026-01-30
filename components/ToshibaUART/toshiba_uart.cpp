@@ -570,68 +570,99 @@ void ToshibaUART::loop() {
   process_command_queue();
 
   status_msg = false;
-  while (available()) {
-    read_array(msg_start,3);
-    if (msg_start[0] == 0xF0 && msg_start[1] == 0xF0){
-      msg_len = msg_start[2];
-      read_array(msg,msg_len-3);
-      msg_from = msg[0];
-      msg_to = msg[1];
-      if ((msg_from == MSG_ID_PUMP) && (msg[4] == 0x31) ) { // This is status message from pump
-        zone1_active              = msg[5] & (1);
-        hotwater_active_prev      = hotwater_active;
-        hotwater_active           = msg[5] & (1 << 1);
-        auto_mode_active          = msg[6] & (1 << 2);
-        heat_resistor_heating     = msg[7] & (1 << 0);
-        zone1_pumpin              = msg[7] & (1 << 1);
-        hotwater_resistor_heating = msg[7] & (1 << 2);
-        hotwater_pumpin           = msg[7] & (1 << 3);
-        zone1_active_prev         = zone1_active;
-        zone1_active              = msg[5] & (1);
-        
-        cooling_mode              = msg[5] & (1 << 5);
-        heating_mode              = msg[5] & (1 << 6);
+  // Need at least 3 bytes for the header (F0:F0:length) before attempting to read
+  // At 2400 baud, each byte takes ~4ms, so partial messages can arrive between loop iterations
+  while (available() >= 3) {
+    read_array(msg_start, 3);
 
-        hotwater_temp_prev = hotwater_temp;
-        hotwater_temp = ((msg[8])/2-16);
+    // Validate header
+    if (msg_start[0] != 0xF0 || msg_start[1] != 0xF0) {
+      // Not a valid header - try to resync by looking for F0:F0
+      // Skip this byte and continue (we already consumed 3 bytes though)
+      ESP_LOGD(TAG, "Invalid header: %02X:%02X:%02X, resyncing", msg_start[0], msg_start[1], msg_start[2]);
+      continue;
+    }
 
-        zone1_target_temp_prev = zone1_target_temp;
-        zone1_target_temp = ((msg[9])/2-16);
+    msg_len = msg_start[2];
 
-        if (msg_len > 18){ // only in longer messages
-          zone1_water_temp_prev = zone1_water_temp;
-          zone1_water_temp = ((msg[13])/2-16);
-        }
+    // Validate length
+    int remaining = msg_len - 3;
+    if (remaining <= 0 || remaining > 17) {
+      ESP_LOGW(TAG, "Invalid message length: %d", msg_len);
+      continue;
+    }
 
-        pump_state_known          = true;
-
-        // Check if pending mode change has been confirmed
-        if (mode_change_pending) {
-          if (cooling_mode == mode_change_target) {
-            ESP_LOGI(TAG, "Mode change confirmed: cooling_mode=%d", cooling_mode);
-            mode_change_pending = false;
-          }
-        }
-
-        publish_states();
-      } else if ((msg[3] == 0x80) && (msg[4] == 0xA1)) {
-        // Command acknowledgment received (80:A1)
-        if (command_pending) {
-          uint32_t response_time = millis() - command_sent_time;
-          ESP_LOGI(TAG, "Command acknowledged in %dms", response_time);
-          command_pending = false;
-        }
-      } else if ((msg[3] == 0x80) && (msg[4] == 0x5C)) {
-        publish_sensor(sensor_arr[current_sensor],encode_uint16(msg[5],msg[6]));
-        ESP_LOGD(TAG,"current sensor = %d value = %d",current_sensor,encode_uint16(msg[5],msg[6]));
-        // If we're receiving valid sensor responses, communication is working
-        if (!pump_state_known) {
-          ESP_LOGI(TAG,"Sensor data received - enabling command sending");
-          pump_state_known = true;
-        }
+    // Check if we have enough bytes for the payload before reading
+    if (available() < remaining) {
+      // Not enough data yet - at 2400 baud this can happen
+      // Unfortunately we've already consumed the header, so we need to wait
+      // Use a short blocking wait since the data should be arriving
+      uint32_t wait_start = millis();
+      while (available() < remaining && (millis() - wait_start) < 50) {
+        delay(1);  // Wait up to 50ms for rest of message
+      }
+      if (available() < remaining) {
+        ESP_LOGW(TAG, "Timeout waiting for payload: have %d, need %d", available(), remaining);
+        continue;
       }
     }
-  
+
+    read_array(msg, remaining);
+    msg_from = msg[0];
+    msg_to = msg[1];
+    if ((msg_from == MSG_ID_PUMP) && (msg[4] == 0x31) ) { // This is status message from pump
+      zone1_active              = msg[5] & (1);
+      hotwater_active_prev      = hotwater_active;
+      hotwater_active           = msg[5] & (1 << 1);
+      auto_mode_active          = msg[6] & (1 << 2);
+      heat_resistor_heating     = msg[7] & (1 << 0);
+      zone1_pumpin              = msg[7] & (1 << 1);
+      hotwater_resistor_heating = msg[7] & (1 << 2);
+      hotwater_pumpin           = msg[7] & (1 << 3);
+      zone1_active_prev         = zone1_active;
+      zone1_active              = msg[5] & (1);
+
+      cooling_mode              = msg[5] & (1 << 5);
+      heating_mode              = msg[5] & (1 << 6);
+
+      hotwater_temp_prev = hotwater_temp;
+      hotwater_temp = ((msg[8])/2-16);
+
+      zone1_target_temp_prev = zone1_target_temp;
+      zone1_target_temp = ((msg[9])/2-16);
+
+      if (msg_len > 18){ // only in longer messages
+        zone1_water_temp_prev = zone1_water_temp;
+        zone1_water_temp = ((msg[13])/2-16);
+      }
+
+      pump_state_known          = true;
+
+      // Check if pending mode change has been confirmed
+      if (mode_change_pending) {
+        if (cooling_mode == mode_change_target) {
+          ESP_LOGI(TAG, "Mode change confirmed: cooling_mode=%d", cooling_mode);
+          mode_change_pending = false;
+        }
+      }
+
+      publish_states();
+    } else if ((msg[3] == 0x80) && (msg[4] == 0xA1)) {
+      // Command acknowledgment received (80:A1)
+      if (command_pending) {
+        uint32_t response_time = millis() - command_sent_time;
+        ESP_LOGI(TAG, "Command acknowledged in %dms", response_time);
+        command_pending = false;
+      }
+    } else if ((msg[3] == 0x80) && (msg[4] == 0x5C)) {
+      publish_sensor(sensor_arr[current_sensor],encode_uint16(msg[5],msg[6]));
+      ESP_LOGD(TAG,"current sensor = %d value = %d",current_sensor,encode_uint16(msg[5],msg[6]));
+      // If we're receiving valid sensor responses, communication is working
+      if (!pump_state_known) {
+        ESP_LOGI(TAG,"Sensor data received - enabling command sending");
+        pump_state_known = true;
+      }
+    }
   }
   if (!zone1_active_prev && zone1_active && wanted_zone1_target_temp){
     zone1_active_prev = true;
