@@ -77,7 +77,7 @@ const uint8_t CODE_REQUEST_DATA[26] = {0x03,0x04,0x06,0x07,0x08,0x0A,0x0B,0x0E,0
 
 // Command Queue Constants
 const uint8_t QUEUE_SIZE = 10;
-const uint32_t CMD_TIMEOUT_MS = 2000;  // 2 seconds
+const uint32_t CMD_TIMEOUT_MS = 5000;
 const uint8_t MAX_RETRIES = 3;
 
 // Command Types
