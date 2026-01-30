@@ -88,9 +88,9 @@ bool mode_change_pending = false;
 bool mode_change_target = false;      // Target mode: true=cooling, false=heating
 uint32_t mode_change_sent_time = 0;
 uint8_t mode_change_retry_count = 0;
-const uint32_t MODE_CHANGE_RETRY_MS = 3000;     // Retry command after 3s if not confirmed
+const uint32_t MODE_CHANGE_RETRY_MS = 5000;     // Retry command after 5s if not confirmed
 const uint32_t MODE_CHANGE_MIN_INTERVAL_MS = 5000;  // Minimum 5s between mode changes
-const uint8_t MODE_CHANGE_MAX_RETRIES = 3;
+const uint8_t MODE_CHANGE_MAX_RETRIES = 5;
 
 bool query_data = false;
 
@@ -407,9 +407,15 @@ void ToshibaUART::set_cooling_mode(bool state) {
 
   // If already changing to this mode, ignore duplicate request
   if (mode_change_pending && mode_change_target == state) {
-    ESP_LOGI(TAG,"Mode change already pending for this state, ignoring");
+    ESP_LOGI(TAG,"Mode change already pending for this state, ignoring duplicate");
     this->cooling_mode_switch_switch_->publish_state(state);  // Keep UI showing target
     return;
+  }
+
+  // If trying to change to opposite mode while change is pending, warn but allow
+  if (mode_change_pending && mode_change_target != state) {
+    ESP_LOGW(TAG,"Mode change requested to %d while pending change to %d - overriding",
+             state, mode_change_target);
   }
 
   // Enforce minimum interval between mode changes
@@ -608,8 +614,11 @@ void ToshibaUART::loop() {
       // Check if pending mode change has been confirmed
       if (mode_change_pending) {
         if (cooling_mode == mode_change_target) {
-          ESP_LOGI(TAG, "Mode change confirmed: cooling_mode=%d", cooling_mode);
+          ESP_LOGI(TAG, "Mode change confirmed: cooling_mode=%d (target was %d)", cooling_mode, mode_change_target);
           mode_change_pending = false;
+        } else {
+          ESP_LOGD(TAG, "Mode change still pending: actual=%d, target=%d, retry=%d",
+                   cooling_mode, mode_change_target, mode_change_retry_count);
         }
       }
 
