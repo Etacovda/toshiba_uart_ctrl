@@ -5,6 +5,26 @@
 namespace esphome {
 namespace toshiba_uart {
 
+// Command queue with acknowledgment-based flow control
+// Commands are sent, then we wait for ack (80:A1) before sending next
+const uint32_t COMMAND_TIMEOUT_MS = 3000;     // Timeout waiting for ack
+const uint32_t MIN_COMMAND_GAP_MS = 300;      // Minimum gap between commands
+const int MAX_QUEUED_COMMANDS = 10;
+const int MAX_COMMAND_LENGTH = 16;
+
+struct QueuedCommand {
+  uint8_t data[MAX_COMMAND_LENGTH];
+  int length;
+  bool valid;
+};
+
+QueuedCommand command_queue[MAX_QUEUED_COMMANDS];
+int queue_head = 0;
+int queue_tail = 0;
+uint32_t last_command_time = 0;
+bool command_pending = false;       // True when waiting for acknowledgment
+uint32_t command_sent_time = 0;     // When the pending command was sent
+
 std::vector< int > sensor_arr;
 int current_sensor = 0;
 int sensor_count = 0;
@@ -182,12 +202,13 @@ void ToshibaUART::setup() {
 void ToshibaUART::set_zone1_state(bool state) {
   if (pump_state_known && zone1_active != state){
     if(state){
-      this->write_array(INST_ZONE1_ON,sizeof(INST_ZONE1_ON));
+      ESP_LOGI(TAG,"Queueing ZONE1 ON");
+      queue_command(INST_ZONE1_ON, sizeof(INST_ZONE1_ON));
     }
     else{
-      this->write_array(INST_ZONE1_OFF,sizeof(INST_ZONE1_OFF));
+      ESP_LOGI(TAG,"Queueing ZONE1 OFF");
+      queue_command(INST_ZONE1_OFF, sizeof(INST_ZONE1_OFF));
     }
-    this->flush();
     pump_state_known = false;
   }
   else if ( zone1_active == state ){
@@ -199,14 +220,13 @@ void ToshibaUART::set_hotwater_state(bool state) {
   ESP_LOGD(TAG,"Hotwater switch called: state=%d, pump_state_known=%d, hotwater_active=%d", state, pump_state_known, hotwater_active);
   if (pump_state_known && hotwater_active != state){
     if(state){
-      ESP_LOGD(TAG,"Sending HOTWATER ON command");
-      this->write_array(INST_HOTWATER_ON,sizeof(INST_HOTWATER_ON));
+      ESP_LOGI(TAG,"Queueing HOTWATER ON");
+      queue_command(INST_HOTWATER_ON, sizeof(INST_HOTWATER_ON));
     }
     else{
-      ESP_LOGD(TAG,"Sending HOTWATER OFF command");
-      this->write_array(INST_HOTWATER_OFF,sizeof(INST_HOTWATER_OFF));
+      ESP_LOGI(TAG,"Queueing HOTWATER OFF");
+      queue_command(INST_HOTWATER_OFF, sizeof(INST_HOTWATER_OFF));
     }
-    this->flush();
     pump_state_known = false;
   }
   else if ( hotwater_active == state ){
@@ -244,41 +264,40 @@ void ToshibaUART::set_zone1_target_temp(float value) {
   if (zone1_active) {
     // Temperature encoding works for both heating and cooling: (temp + 16) * 2
     uint8_t temp_target_value = (value + 16) * 2;
-    
+
     // Set the mode byte: 0x01 for cooling, 0x02 for heating
     INST_SET_ZONE1_TEMP[8] = cooling_mode ? 0x01 : 0x02;
     INST_SET_ZONE1_TEMP[9] = temp_target_value;
     INST_SET_ZONE1_TEMP[11] = (hotwater_temp + 16) * 2;
     INST_SET_ZONE1_TEMP[12] = temp_target_value;
     INST_SET_ZONE1_TEMP[13] = return_checksum(INST_SET_ZONE1_TEMP,sizeof(INST_SET_ZONE1_TEMP)); // second last, checksum
-    
-    ESP_LOGD(TAG,"Setting Zone1 temp to %.1f°C (mode byte: 0x%02X, temp byte: 0x%02X)", 
+
+    ESP_LOGI(TAG,"Queueing Zone1 temp to %.1f°C (mode byte: 0x%02X, temp byte: 0x%02X)",
              value, INST_SET_ZONE1_TEMP[8], temp_target_value);
-    
-    this->write_array(INST_SET_ZONE1_TEMP,sizeof(INST_SET_ZONE1_TEMP));
-    this->flush();
-    
+
+    queue_command(INST_SET_ZONE1_TEMP, sizeof(INST_SET_ZONE1_TEMP));
+
     // Store for retry mechanism
     last_zone1_temp_command_time = millis();
     last_zone1_temp_command_value = value;
     zone1_temp_command_pending = true;
-    
+
     pump_state_known = false;
     wanted_zone1_target_temp = 0;
   }
   else{
     wanted_zone1_target_temp = value;
   }
-  
+
 }
 
 void ToshibaUART::set_hotwater_target_temp(float value) {
   if (hotwater_active) {
     INST_SET_HOTWATER_TEMP[11] = (value + 16) * 2;
     INST_SET_HOTWATER_TEMP[13] = return_checksum(INST_SET_HOTWATER_TEMP,sizeof(INST_SET_HOTWATER_TEMP)); // second last, checksum
-    
-    this->write_array(INST_SET_HOTWATER_TEMP,sizeof(INST_SET_HOTWATER_TEMP));
-    this->flush();
+
+    ESP_LOGI(TAG,"Queueing Hotwater temp to %.1f°C", value);
+    queue_command(INST_SET_HOTWATER_TEMP, sizeof(INST_SET_HOTWATER_TEMP));
     pump_state_known = false;
     wanted_hotwater_water_temp = 0;
   }
@@ -295,24 +314,102 @@ uint8_t ToshibaUART::return_checksum(uint8_t msg[], int len) {
   return Checksum;
 }
 
+// Queue a command for ack-based sending
+void ToshibaUART::queue_command(const uint8_t* cmd, int len) {
+  uint32_t now = millis();
+  bool queue_empty = (queue_head == queue_tail);
+
+  // Allow immediate send if: queue empty AND not waiting for ack AND enough gap
+  bool first_command = (last_command_time == 0);
+  bool gap_ok = (now - last_command_time >= MIN_COMMAND_GAP_MS);
+
+  if (queue_empty && !command_pending && (first_command || gap_ok)) {
+    // Send immediately
+    ESP_LOGI(TAG, "Sending command immediately");
+    this->write_array(cmd, len);
+    this->flush();
+    last_command_time = now;
+    command_pending = true;
+    command_sent_time = now;
+    return;
+  }
+
+  // Add to queue
+  int next_tail = (queue_tail + 1) % MAX_QUEUED_COMMANDS;
+  if (next_tail == queue_head) {
+    ESP_LOGW(TAG, "Command queue full, dropping command");
+    return;
+  }
+
+  if (len > MAX_COMMAND_LENGTH) {
+    ESP_LOGW(TAG, "Command too long (%d bytes), dropping", len);
+    return;
+  }
+
+  memcpy(command_queue[queue_tail].data, cmd, len);
+  command_queue[queue_tail].length = len;
+  command_queue[queue_tail].valid = true;
+  queue_tail = next_tail;
+  ESP_LOGD(TAG, "Command queued (queue size: %d)", (queue_tail - queue_head + MAX_QUEUED_COMMANDS) % MAX_QUEUED_COMMANDS);
+}
+
+// Process queued commands with ack-based flow control
+void ToshibaUART::process_command_queue() {
+  uint32_t now = millis();
+
+  // Check for timeout on pending command
+  if (command_pending && (now - command_sent_time >= COMMAND_TIMEOUT_MS)) {
+    ESP_LOGW(TAG, "Command timeout after %dms, no ack received - proceeding", COMMAND_TIMEOUT_MS);
+    command_pending = false;
+  }
+
+  // Don't send if still waiting for ack
+  if (command_pending) {
+    return;
+  }
+
+  // Check if queue is empty
+  if (queue_head == queue_tail) {
+    return;
+  }
+
+  // Ensure minimum gap between commands
+  if (now - last_command_time < MIN_COMMAND_GAP_MS) {
+    return;
+  }
+
+  // Send next command
+  if (command_queue[queue_head].valid) {
+    ESP_LOGI(TAG, "Sending queued command");
+    this->write_array(command_queue[queue_head].data, command_queue[queue_head].length);
+    this->flush();
+    last_command_time = now;
+    command_pending = true;
+    command_sent_time = now;
+    command_queue[queue_head].valid = false;
+  }
+
+  queue_head = (queue_head + 1) % MAX_QUEUED_COMMANDS;
+}
+
 void ToshibaUART::set_cooling_mode(bool state) {
-  ESP_LOGD(TAG,"Cooling mode switch called: state=%d, pump_state_known=%d, cooling_mode=%d", state, pump_state_known, cooling_mode);
+  ESP_LOGI(TAG,"Cooling mode switch called: requested=%d, current cooling_mode=%d, heating_mode=%d, zone1_active=%d, pump_state_known=%d",
+           state, cooling_mode, heating_mode, zone1_active, pump_state_known);
   if (pump_state_known && cooling_mode != state){
     if(state){
-      // Switch to cooling mode
-      ESP_LOGD(TAG,"Sending COOLING MODE ON command");
-      this->write_array(INST_COOLING_MODE_ON,sizeof(INST_COOLING_MODE_ON));
+      // Switch to cooling mode - use captured command from wall controller
+      ESP_LOGI(TAG,"Queueing COOLING MODE ON: F0:F0:0C:60:70:E0:01:22:05:05:E9:A0");
+      queue_command(INST_COOLING_MODE_ON, sizeof(INST_COOLING_MODE_ON));
     }
     else{
-      // Switch to heating mode
-      ESP_LOGD(TAG,"Sending HEATING MODE ON command");
-      this->write_array(INST_HEATING_MODE_ON,sizeof(INST_HEATING_MODE_ON));
+      // Switch to heating mode - captured from wall controller
+      ESP_LOGI(TAG,"Queueing HEATING MODE ON: F0:F0:0C:60:70:E0:01:22:06:06:EB:A0");
+      queue_command(INST_HEATING_MODE_ON, sizeof(INST_HEATING_MODE_ON));
     }
-    this->flush();
     pump_state_known = false;
   }
   else if ( cooling_mode == state ){
-    ESP_LOGD(TAG,"Cooling mode already in requested state, republishing");
+    ESP_LOGI(TAG,"Cooling mode already in requested state (%d), republishing", cooling_mode);
     this->cooling_mode_switch_switch_->publish_state(cooling_mode);
   }
   else {
@@ -323,12 +420,13 @@ void ToshibaUART::set_cooling_mode(bool state) {
 void ToshibaUART::set_auto_mode(bool state) {
   if (pump_state_known && auto_mode_active != state){
     if(state){
-      this->write_array(INST_AUTO_ON,sizeof(INST_AUTO_ON));
+      ESP_LOGI(TAG,"Queueing AUTO MODE ON");
+      queue_command(INST_AUTO_ON, sizeof(INST_AUTO_ON));
     }
     else{
-      this->write_array(INST_AUTO_OFF,sizeof(INST_AUTO_OFF));
+      ESP_LOGI(TAG,"Queueing AUTO MODE OFF");
+      queue_command(INST_AUTO_OFF, sizeof(INST_AUTO_OFF));
     }
-    this->flush();
     pump_state_known = false;
   }
   else if ( auto_mode_active == state ){
@@ -432,6 +530,9 @@ void ToshibaUART::publish_states() {
 }
 
 void ToshibaUART::loop() {
+  // Process any queued commands (ack-based with 3s timeout fallback)
+  process_command_queue();
+
   status_msg = false;
   while (available()) {
     read_array(msg_start,3);
@@ -468,9 +569,21 @@ void ToshibaUART::loop() {
 
         pump_state_known          = true;
         publish_states();
+      } else if ((msg[3] == 0x80) && (msg[4] == 0xA1)) {
+        // Command acknowledgment received (80:A1)
+        if (command_pending) {
+          uint32_t response_time = millis() - command_sent_time;
+          ESP_LOGI(TAG, "Command acknowledged in %dms", response_time);
+          command_pending = false;
+        }
       } else if ((msg[3] == 0x80) && (msg[4] == 0x5C)) {
         publish_sensor(sensor_arr[current_sensor],encode_uint16(msg[5],msg[6]));
         ESP_LOGD(TAG,"current sensor = %d value = %d",current_sensor,encode_uint16(msg[5],msg[6]));
+        // If we're receiving valid sensor responses, communication is working
+        if (!pump_state_known) {
+          ESP_LOGI(TAG,"Sensor data received - enabling command sending");
+          pump_state_known = true;
+        }
       }
     }
   
