@@ -227,13 +227,19 @@ void ToshibaUART::set_hotwater_state(bool state) {
 
 
 void ToshibaUART::update() {
+  // Don't send sensor requests if commands are pending to avoid UART collisions
+  if (!command_queue_.empty()) {
+    ESP_LOGD(TAG, "Skipping sensor request - command queue has %d pending commands", command_queue_.size());
+    return;
+  }
+
   current_sensor ++;
-  if ( update_slow_sensors_counter == 10 ){    
+  if ( update_slow_sensors_counter == 10 ){
     if (current_sensor == slow_sensor_count + sensor_count){
       current_sensor = 0;
       update_slow_sensors_counter = 0;
     }
-  } 
+  }
   else {
     update_slow_sensors_counter++;
     if (current_sensor == sensor_count){
