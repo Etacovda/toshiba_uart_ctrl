@@ -301,12 +301,12 @@ void ToshibaUART::set_cooling_mode(bool state) {
   if (pump_state_known && cooling_mode != state){
     if(state){
       // Switch to cooling mode
-      ESP_LOGI(TAG,"Sending COOLING MODE ON: F0:F0:0F:60:70:E0:41:0C:81:00:00:48:00:D5:A0");
+      ESP_LOGI(TAG,"Sending COOLING MODE ON: F0:F0:0C:60:70:E0:01:22:05:05:E9:A0");
       this->write_array(INST_COOLING_MODE_ON,sizeof(INST_COOLING_MODE_ON));
     }
     else{
       // Switch to heating mode
-      ESP_LOGI(TAG,"Sending HEATING MODE ON: F0:F0:0F:60:70:E0:41:0C:01:00:00:48:00:55:A0");
+      ESP_LOGI(TAG,"Sending HEATING MODE ON: F0:F0:0C:60:70:E0:01:22:05:00:E4:A0");
       this->write_array(INST_HEATING_MODE_ON,sizeof(INST_HEATING_MODE_ON));
     }
     this->flush();
