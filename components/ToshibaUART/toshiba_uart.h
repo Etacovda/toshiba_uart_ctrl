@@ -151,6 +151,8 @@ class ToshibaUART : public uart::UARTDevice, public PollingComponent {
     void set_hotwater_state(bool state);
     void request_data(uint8_t request_code);
     void publish_sensor(int sensor_index, int16_t value);
+    void queue_command(const uint8_t* cmd, int len);
+    void process_command_queue();
     
     // Retry mechanism for temperature commands
     uint32_t last_zone1_temp_command_time = 0;
