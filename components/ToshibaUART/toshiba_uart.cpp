@@ -306,7 +306,7 @@ void ToshibaUART::set_cooling_mode(bool state) {
     }
     else{
       // Switch to heating mode
-      ESP_LOGI(TAG,"Sending HEATING MODE ON: F0:F0:0C:60:70:E0:01:22:05:00:E4:A0");
+      ESP_LOGI(TAG,"Sending HEATING MODE ON: F0:F0:0C:60:70:E0:01:22:04:04:E7:A0");
       this->write_array(INST_HEATING_MODE_ON,sizeof(INST_HEATING_MODE_ON));
     }
     this->flush();
