@@ -472,7 +472,6 @@ void ToshibaUART::loop() {
         publish_sensor(sensor_arr[current_sensor],encode_uint16(msg[5],msg[6]));
         ESP_LOGD(TAG,"current sensor = %d value = %d",current_sensor,encode_uint16(msg[5],msg[6]));
         // If we're receiving valid sensor responses, communication is working
-        // Set pump_state_known to allow commands even if we haven't received a 0x31 status yet
         if (!pump_state_known) {
           ESP_LOGI(TAG,"Sensor data received - enabling command sending");
           pump_state_known = true;
