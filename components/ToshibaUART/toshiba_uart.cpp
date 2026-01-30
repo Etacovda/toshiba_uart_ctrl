@@ -300,16 +300,23 @@ void ToshibaUART::set_cooling_mode(bool state) {
            state, cooling_mode, heating_mode, zone1_active, pump_state_known);
   if (pump_state_known && cooling_mode != state){
     if(state){
-      // Switch to cooling mode
+      // Switch to cooling mode - use captured command from wall controller
       ESP_LOGI(TAG,"Sending COOLING MODE ON: F0:F0:0C:60:70:E0:01:22:05:05:E9:A0");
       this->write_array(INST_COOLING_MODE_ON,sizeof(INST_COOLING_MODE_ON));
+      this->flush();
     }
     else{
-      // Switch to heating mode
-      ESP_LOGI(TAG,"Sending HEATING MODE ON: F0:F0:0C:60:70:E0:01:22:04:04:E7:A0");
-      this->write_array(INST_HEATING_MODE_ON,sizeof(INST_HEATING_MODE_ON));
+      // Switch to heating mode - no direct command known
+      // Toggle zone OFF then ON to reset to heating mode (zone ON defaults to heating)
+      ESP_LOGI(TAG,"Switching to heating mode via zone toggle");
+      ESP_LOGI(TAG,"Sending ZONE OFF: F0:F0:0B:60:70:E0:01:21:0A:E7:A0");
+      this->write_array(INST_ZONE1_OFF,sizeof(INST_ZONE1_OFF));
+      this->flush();
+      delay(500);  // Wait for pump to process
+      ESP_LOGI(TAG,"Sending ZONE ON: F0:F0:0B:60:70:E0:01:21:03:E0:A0");
+      this->write_array(INST_ZONE1_ON,sizeof(INST_ZONE1_ON));
+      this->flush();
     }
-    this->flush();
     pump_state_known = false;
   }
   else if ( cooling_mode == state ){
